@@ -54,11 +54,13 @@ class Model:
         return instance
 
     def save(self):
+        if not self._dirty:
+            return
         if self.id:
             assignments = [
                 f"{key}=%s"
                 for key in self._fields
-                if key != "id"
+                if key != "id" and self._values.get(key, missing) is not missing
             ]
             sql = f"""
             UPDATE {self._table_name}
@@ -70,7 +72,7 @@ class Model:
                     *(
                         v.to_sql(self._values[k])
                         for (k, v) in self._fields.items()
-                        if k != "id"
+                        if k != "id" and self._values.get(k, missing) is not missing
                     ),
                     self.id,
                 ])
@@ -233,6 +235,8 @@ class Field:
             return None
         if self.type in [str, int]:
             return sql
+        elif issubclass(self.type, Model):
+            return self.type.get(sql)
         elif issubclass(self.type, Enum):
             return self.type(sql)
         raise TypeError(f"Don't know how to transform value of type {type(value)} from SQL")
@@ -246,6 +250,10 @@ class Field:
             return value
         if issubclass(self.type, Enum):
             return value.value
+        if issubclass(self.type, Model):
+            assert isinstance(value, self.type)
+            value.save()
+            return value.id
         if self.type is int:
             return value
         raise TypeError(f"Don't know how to transform value of type {type(value)} to SQL")

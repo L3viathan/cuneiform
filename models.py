@@ -7,6 +7,12 @@ class CompanyType(Enum):
     KG = 3
     other = 4
 
+class Address(ozee.Model):
+    street = ozee.Field(str)
+    house_number = ozee.Field(int)  # jaja, eigentlich str..
+    post_code = ozee.Field(str, min_length=5, max_length=5)
+    town = ozee.Field(str)
+
 # >>> repr(CompanyType.GmbH)
 # CompanyType.GmbH
 # >>> CompanyType(2)
@@ -15,42 +21,12 @@ class CompanyType(Enum):
 class Customer(ozee.Model):
     name = ozee.Field(str)
     type = ozee.Field(CompanyType, default=None)
+    address = ozee.Field(Address, default=None)
 
 if __name__ == "__main__":
-    c1 = Customer(name="Firma A", type=CompanyType.GmbH)
-    c2 = Customer(name="Firma B", type=CompanyType.AG)
-    c2.type=CompanyType.KG
-    c1.save()
-    c2.save()
-    customer_id = c1.id
-
-    c = Customer.get(customer_id)
-    print("Name before:", c.name)
-    c.name = "Rheinmetall"
-    c.save()
-    c = Customer.get(customer_id)
-    print("Name after:", c.name)
-    for customer in Customer.select(
-        limit=20,
-        order_by=(Customer.name.desc, Customer.id.asc),
-    ):
-        print(customer)
-
-    cust = Customer.select(where=Customer.id < 100)
-    print("rs:", cust, len(cust))
-    cust.filter(Customer.name=="Firma B").delete()
-    print("after delete n rows:", len(cust))
-    cust.filter(Customer.name=="Firma A").update(name="BOSCH")
-    cust.update(type=CompanyType.KG)
-    for customer in Customer.select(
-        limit=20,
-        order_by=(Customer.name.desc, Customer.id.asc),
-    ):
-        print(customer)
-    cust.delete()
-    print("final n rows:", len(cust))
-
-
+    addr = Address(street="Zeppelinstraße", house_number=15, post_code="76135", town="Karlsruhe")
+    cust = Customer(name="solute", type=CompanyType.GmbH, address=addr)
+    cust.save()
 
     # TODO:
     # - search/filter, recordset and its methods (update, delete, ...)
