@@ -1,5 +1,5 @@
 from enum import Enum
-import ozee
+import cuneiform as cf
 
 class CompanyType(Enum):
     GmbH = 1
@@ -7,21 +7,21 @@ class CompanyType(Enum):
     KG = 3
     other = 4
 
-class Address(ozee.Model):
-    street = ozee.Field(str)
-    house_number = ozee.Field(int)  # jaja, eigentlich str..
-    post_code = ozee.Field(str, min_length=5, max_length=5)
-    town = ozee.Field(str)
+class Address(cf.Model):
+    street = cf.Field(str)
+    house_number = cf.Field(int)  # jaja, eigentlich str..
+    post_code = cf.Field(str, min_length=5, max_length=5)
+    town = cf.Field(str)
 
 # >>> repr(CompanyType.GmbH)
 # CompanyType.GmbH
 # >>> CompanyType(2)
 # CompanyType.AG
 
-class Customer(ozee.Model):
-    name = ozee.Field(str)
-    type = ozee.Field(CompanyType, default=None)
-    addr = ozee.Field(Address, default=None)
+class Customer(cf.Model):
+    name = cf.Field(str)
+    type = cf.Field(CompanyType, default=None)
+    addr = cf.Field(Address, default=None)
 
 if __name__ == "__main__":
     # addr = Address(street="Zeppelinstraße", house_number=15, post_code="76135", town="Karlsruhe")
