@@ -14,7 +14,7 @@ class CompanyType(Enum):
 
 class Customer(ozee.Model):
     name = ozee.Field(str)
-    type = ozee.Field(CompanyType)
+    type = ozee.Field(CompanyType, default=None)
 
 if __name__ == "__main__":
     c1 = Customer(name="Firma A", type=CompanyType.GmbH)

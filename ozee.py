@@ -3,6 +3,8 @@ import psycopg2
 
 conn = psycopg2.connect("dbname=ozee user=ozee password=ozee")
 
+missing = object()
+
 class Model:
     def __init_subclass__(subclass):
         fields = {}
@@ -79,7 +81,14 @@ class Model:
                 if k == "id":
                     continue
                 columns.append(k)
-                values.append(v.to_sql(self._values[k]))
+                default = v.options.get("default", missing)
+                value = self._values.get(k, missing)
+                if value is not missing:
+                    values.append(v.to_sql(value))
+                elif default is not missing:
+                    values.append(v.to_sql(default))
+                else:
+                    raise ValueError(f"No value for {k} set and no default present")
             sql = f"""
             INSERT INTO
                 {self._table_name}
@@ -160,7 +169,6 @@ class RecordSet:
             {self.model_class._table_name}
         {where_expression}
         """
-        print("delete sql:", sql)
         with conn.cursor() as cur:
             cur.execute(sql, literals)
             conn.commit()
@@ -221,15 +229,19 @@ class Field:
         return self.name
 
     def from_sql(self, sql):
+        if sql is None:
+            return None
         if self.type in [str, int]:
             return sql
         elif issubclass(self.type, Enum):
             return self.type(sql)
         raise TypeError(f"Don't know how to transform value of type {type(value)} from SQL")
 
-    def to_sql(self, value=None):
-        if value is None:  # when evaluated as part of a WHERE clause
+    def to_sql(self, value=missing):
+        if value is missing:  # when evaluated as part of a WHERE clause
             return self.name
+        if value is None:
+            return None  # NULL
         if self.type is str:
             return value
         if issubclass(self.type, Enum):
