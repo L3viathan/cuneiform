@@ -24,7 +24,7 @@ class Model:
         self._values = {}
         self._dirty = False
         for k, v in kwargs.items():
-            assert k in self._fields
+            assert k in self._fields, f"{k} is not in fields of {self}, only {self._fields}"
             setattr(self, k, v)
         for k, v in self._fields.items():
             if v.required and k != "id":
@@ -37,10 +37,20 @@ class Model:
         )
         return f"<{self.__class__.__name__}{'[D]' if self._dirty else ''} {value_list}>"
 
+
+    @classmethod
+    def drop(cls):
+        sql = f"""
+        DROP TABLE IF EXISTS
+            {cls._table_name}
+        CASCADE
+        """
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            conn.commit()
+
     @classmethod
     def create(cls):
-        # 1. create table in DB
-        # 2. make foreign key constraint
         field_list = {
             f"{name} {field.sql_type}"
             for name, field in cls._fields.items()
@@ -153,13 +163,12 @@ class RecordSet:
     def _resolve_where(self):
         if self.where:
             where_sql, literals, joins = self.where.to_sql()
-            # JOIN address ON address.id = customer.addr
             join_expression = "\n".join(
                 "JOIN {foreign} ON {foreign}.id = {source}.{column}".format(
-                    foreign=joins[0].field.owner._table_name,
-                    source=joins[0].source._table_name,
-                    column=joins[0].column,
-                ) for join in joins
+                    foreign=foreign,
+                    source=source,
+                    column=column,
+                ) for source, foreign, column in joins
             )
             return f"WHERE {where_sql}", join_expression, literals
         else:
@@ -183,7 +192,6 @@ class RecordSet:
         {order_by_expression}
         {limit_expression}
         """
-        print(sql, literals)
         with conn.cursor() as cur:
             cur.execute(sql, literals)
             for row in cur.fetchall():
@@ -256,7 +264,6 @@ class RecordSet:
         {join_expression}
         {where_expression}
         """
-        print("in len:", sql, literals)
 
         with conn.cursor() as cur:
             cur.execute(sql, literals)
@@ -373,44 +380,47 @@ class Field:
     def __getattr__(self, attr):
         if not issubclass(self.type, Model):
             raise AttributeError(f"As {self.type.__name__} is not a Model, we can't access the attribute {attr}")
-        return Joiner(self.owner, self.name, getattr(self.type, attr))
+        return Expression(
+            "join",
+            [
+                [
+                    (
+                        self.owner._table_name,
+                        self.type._table_name,
+                        self.name,
+                    ),
+                ],
+                getattr(self.type, attr),
+            ],
+        )
 
-class Joiner:
-    def __init__(self, source, column, field):
-        self.source = source
-        self.column = column
-        self.field = field
-
-    def __repr__(self):
-        return f"<Join {self.source} on {self.column} to {self.field}>"
-
-    def __eq__(self, other):
-        return Expression("=", [self.field, other], join=self)
-
-    def __ne__(self, other):
-        return Expression("!=", [self.field, other], join=self)
-
-    def __lt__(self, other):
-        return Expression("<", [self.field, other], join=self)
-
-    def __gt__(self, other):
-        return Expression(">", [self.field, other], join=self)
-
-    def __le__(self, other):
-        return Expression("<=", [self.field, other], join=self)
-
-    def __ge__(self, other):
-        return Expression(">=", [self.field, other], join=self)
 
 class Expression:
     def __init__(self, operator, operands, join=None):
         self.operator = operator
         self.operands = operands
-        self.join = join
+
+    def __getattr__(self, attr):
+        if not issubclass(self.operands[-1].type, Model) or self.operator != "join":
+            raise AttributeError(f"As {self.type.__name__} is not a Model, we can't access the attribute {attr}")
+        field = self.operands[-1]
+        return Expression(
+            "join",
+            [
+                [
+                    *self.operands[0],
+                    (
+                        field.owner._table_name,
+                        field.type._table_name,
+                        field.name,
+                    ),
+                ],
+                getattr(field.type, attr),
+            ],
+        )
 
     def __repr__(self):
-        a, b = self.operands
-        return f"<{a!r} {self.operator} {b!r}>"
+        return f"<{self.operator}{self.operands}>"
 
     def __and__(self, other):
         return Expression("AND", [self, other])
@@ -418,25 +428,58 @@ class Expression:
     def __or__(self, other):
         return Expression("OR", [self, other])
 
+    def __eq__(self, other):
+        return Expression("=", [self, other])
+
+    def __ne__(self, other):
+        return Expression("!=", [self, other])
+
+    def __lt__(self, other):
+        return Expression("<", [self, other])
+
+    def __gt__(self, other):
+        return Expression(">", [self, other])
+
+    def __le__(self, other):
+        return Expression("<=", [self, other])
+
+    def __ge__(self, other):
+        return Expression(">=", [self, other])
+
     def to_sql(self):
         literals = []
         operands = []
         joins = []
-        if self.join:
-            joins.append(self.join)
-        for operand in self.operands:
-            if hasattr(operand, "to_sql"):
-                if isinstance(operand, Expression):
-                    sql_operand, inner_literals, inner_joins = operand.to_sql()
-                    operands.append(sql_operand)
-                    literals.extend(inner_literals)
-                    joins.append(inner_joins)
-                else:  # Field
-                    operands.append(operand.to_sql())
-            else:  # literal value
-                literals.append(operand)
-                operands.append("%s")
-        if len(self.operands) == 1:
+        if self.operator == "join":
+            if isinstance(self.operands[-1], Expression):
+                sql_operand, inner_literals, inner_joins = self.operands[-1].to_sql()
+                joins.extend(self.operands[0])
+                joins.extend(inner_joins)
+                literals.extend(inner_literals)
+            else:
+                joins.extend(self.operands[0])
+                sql_operand = self.operands[-1].to_sql()
+            operands.append(sql_operand)
+        else:
+            for operand in self.operands:
+                if hasattr(operand, "to_sql"):
+                    if isinstance(operand, Expression):
+                        sql_operand, inner_literals, inner_joins = operand.to_sql()
+                        operands.append(sql_operand)
+                        literals.extend(inner_literals)
+                        joins.extend(inner_joins)
+                    else:  # Field
+                        operands.append(operand.to_sql())
+                else:  # literal(ish) value
+                    if isinstance(operand, Enum):
+                        operand = operand.value
+                    elif isinstance(operand, Model):
+                        operand = operand.id
+                    literals.append(operand)
+                    operands.append("%s")
+        if self.operator == "join":
+            return operands[0], literals, joins
+        elif len(self.operands) == 1:
             return f"{self.operator} {operands[0]}", literals, joins
         elif len(self.operands) == 2:
             return f"{operands[0]} {self.operator} {operands[1]}", literals, joins

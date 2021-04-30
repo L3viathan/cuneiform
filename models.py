@@ -1,22 +1,21 @@
 from enum import Enum
 import cuneiform as cf
 
+
 class CompanyType(Enum):
     GmbH = 1
     AG = 2
     KG = 3
     other = 4
 
+class Town(cf.Model):
+    name = cf.Field(str)
+
 class Address(cf.Model):
     street = cf.Field(str)
     house_number = cf.Field(int)  # jaja, eigentlich str..
     post_code = cf.Field(str, min_length=5, max_length=5)
-    town = cf.Field(str)
-
-# >>> repr(CompanyType.GmbH)
-# CompanyType.GmbH
-# >>> CompanyType(2)
-# CompanyType.AG
+    town = cf.Field(Town)
 
 class Customer(cf.Model):
     name = cf.Field(str)
@@ -24,15 +23,27 @@ class Customer(cf.Model):
     addr = cf.Field(Address, default=None)
 
 if __name__ == "__main__":
-    addr = Address(street="Zeppelinstraße", house_number=15, post_code="76135", town="Karlsruhe")
-    cust = Customer(name="solute", type=CompanyType.GmbH, address=addr)
-    cust.save()
+    Customer.drop()  # drops all dependent tables
+    Customer.create()  # creates and links all dependent tables
 
-    expr = Customer.addr.house_number == 15
-    print("hn ??:", list(Customer.select()))
-    print("hn 15:", list(Customer.select(where=Customer.addr.house_number == 15)))
+    s = Town(name="Stuttgart")
+    ka = Town(name="Karlsruhe")
 
-    # TODO:
-    # - search/filter, recordset and its methods (update, delete, ...)
-    # - relation stuff (foreign keys, ...)
-    # - database state management (migrations etc.)
+    solute_addr = Address(street="Zeppelinstraße", house_number=15, post_code="76137", town=ka)
+    jo_addr = Address(street="Verschlusssache", house_number=23, post_code="70372", town=s)
+
+    Customer(name="Jonathan, Inc.", type=CompanyType.KG, addr=jo_addr).save()
+    solute = Customer(name="solute", type=CompanyType.GmbH, addr=solute_addr)
+    solute.save()
+
+    print("All customers:", list(Customer.select()))
+    print("All customers in KA:", list(Customer.select(where=Customer.addr.town.name == "Karlsruhe")))
+    print("All customers in KA, differently:", list(Customer.select(where=Customer.addr.town == ka)))
+    print(
+        "Complex, pointless query:",
+        list(
+            Customer.select(
+                where=(Customer.addr.town.name == "Karlsruhe") | (Customer.type == CompanyType.AG),
+            ),
+        ),
+    )
