@@ -62,7 +62,6 @@ class Model:
             UPDATE {self._table_name}
             SET {",".join(assignments)}
             WHERE id = %s;
-            COMMIT;
             """
             with conn.cursor() as cur:
                 cur.execute(sql, [
@@ -73,6 +72,7 @@ class Model:
                     ),
                     self.id,
                 ])
+                conn.commit()
         else:
             columns, values = [], []
             for k, v in self._fields.items():
@@ -92,28 +92,44 @@ class Model:
             with conn.cursor() as cur:
                 cur.execute(sql, values)
                 self._values["id"] = cur.fetchone()[0]  # skip Field.__set__
-                cur.execute("COMMIT")
+                conn.commit()
         self._dirty = False
 
     @classmethod
-    def select(cls, where=None, limit=None, order_by=None):
-        if where:
-            where_sql, literals = where.to_sql()
-            where_expression = f"WHERE {where_sql}"
-        else:
-            where_expression = ""
-            literals = []
+    def select(cls, **kwargs):
+        return RecordSet(cls, **kwargs)
 
-        limit_expression = f"LIMIT {int(limit)}" if limit else ""
-        if isinstance(order_by, tuple):
-            order_by = f"{', '.join(order_by)}"
-        order_by_expression = f"ORDER BY {order_by}" if order_by else ""
+
+class RecordSet:
+    def __init__(self, model_class, where=None, limit=None, order_by=None):
+        self.model_class = model_class
+        self.where = where
+        self.limit = limit
+        self.order_by = order_by
+
+    def __repr__(self):
+        return f"<RecordSet({self.model_class.__name__}) {self.where if self.where else ''}>"
+
+    def _resolve_where(self):
+        if self.where:
+            where_sql, literals = self.where.to_sql()
+            return f"WHERE {where_sql}", literals
+        else:
+            return "", []
+
+    def __iter__(self):
+        where_expression, literals = self._resolve_where()
+
+        limit_expression = f"LIMIT {int(self.limit)}" if self.limit else ""
+        if isinstance(self.order_by, tuple):
+            order_by = f"{', '.join(self.order_by)}"
+        order_by_expression = f"ORDER BY {self.order_by}" if self.order_by else ""
 
         sql = f"""
         SELECT
             id
         FROM
-            {cls._table_name}
+            {self.model_class._table_name}
         {where_expression}
         {order_by_expression}
         {limit_expression}
@@ -121,12 +137,78 @@ class Model:
         with conn.cursor() as cur:
             cur.execute(sql, literals)
             for row in cur.fetchall():
-                yield cls.get(row[0])
+                yield self.model_class.get(row[0])
 
+    def filter(self, where_expr):
+        assert isinstance(where_expr, Expression)
+        if not self.where:
+            new_where = where_expr
+        else:
+            new_where = Expression("AND", [self.where, where_expr])
+        return type(self)(
+            self.model_class,
+            limit=self.limit,
+            order_by=self.order_by,
+            where=new_where,
+        )
 
-class RecordSet:
-    def __init__(self, model, ids):
-        ...
+    def delete(self):
+        where_expression, literals = self._resolve_where()
+        sql = f"""
+        DELETE
+        FROM
+            {self.model_class._table_name}
+        {where_expression}
+        """
+        print("delete sql:", sql)
+        with conn.cursor() as cur:
+            cur.execute(sql, literals)
+            conn.commit()
+
+    def update(self, **kwargs):
+        # convert via self.model_class._fields -> to_sql
+        where_expression, literals = self._resolve_where()
+
+        assert "id" not in kwargs
+
+        assignments = [
+            f"{key}=%s"
+            for key in kwargs
+        ]
+
+        sql = f"""
+        UPDATE
+            {self.model_class._table_name}
+        SET {",".join(assignments)}
+        {where_expression}
+        """
+
+        with conn.cursor() as cur:
+            cur.execute(
+                sql,
+                [
+                    *(
+                        self.model_class._fields[key].to_sql(value) for key, value in kwargs.items()
+                    ),
+                    *literals,
+                ],
+            )
+            conn.commit()
+
+    def __len__(self):
+        where_expression, literals = self._resolve_where()
+        sql = f"""
+        SELECT
+            COUNT(*)
+        FROM
+            {self.model_class._table_name}
+        {where_expression}
+        """
+
+        with conn.cursor() as cur:
+            cur.execute(sql, literals)
+            return cur.fetchone()[0]
+
 
 class Field:
     def __init__(self, type, required=False, **options):

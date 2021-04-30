@@ -17,36 +17,38 @@ class Customer(ozee.Model):
     type = ozee.Field(CompanyType)
 
 if __name__ == "__main__":
-    # c1 = Customer(name="Krauss-Maffei", type=CompanyType.GmbH)
-    # c2 = Customer(name="Howaldwerke", type=CompanyType.AG)
-    # c2.type=CompanyType.KG
-    # c1.save()
-    # c2.save()
-    # customer_id = c1.id
+    c1 = Customer(name="Firma A", type=CompanyType.GmbH)
+    c2 = Customer(name="Firma B", type=CompanyType.AG)
+    c2.type=CompanyType.KG
+    c1.save()
+    c2.save()
+    customer_id = c1.id
 
-    # c = Customer.get(customer_id)
-    # print("Name before:", c.name)
-    # c.name = "Rheinmetall"
-    # c.save()
-    # c = Customer.get(customer_id)
-    # print("Name after:", c.name)
+    c = Customer.get(customer_id)
+    print("Name before:", c.name)
+    c.name = "Rheinmetall"
+    c.save()
+    c = Customer.get(customer_id)
+    print("Name after:", c.name)
     for customer in Customer.select(
         limit=20,
         order_by=(Customer.name.desc, Customer.id.asc),
     ):
         print(customer)
-    print("Nur solute:")
+
+    cust = Customer.select(where=Customer.id < 100)
+    print("rs:", cust, len(cust))
+    cust.filter(Customer.name=="Firma B").delete()
+    print("after delete n rows:", len(cust))
+    cust.filter(Customer.name=="Firma A").update(name="BOSCH")
+    cust.update(type=CompanyType.KG)
     for customer in Customer.select(
-        where=Customer.name == "solute",
-        order_by=Customer.id.desc,  # order by lower(name) asc
+        limit=20,
+        order_by=(Customer.name.desc, Customer.id.asc),
     ):
         print(customer)
-
-    cust = Customer.select(Customer.id < 100)
-    cust.update(Customer.type=CompanyType.KG)
-    cust.filter(name="BOSCH").delete()
-    cust.filter(name="Siemens").update(...)
     cust.delete()
+    print("final n rows:", len(cust))
 
 
 
