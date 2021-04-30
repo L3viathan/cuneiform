@@ -123,13 +123,21 @@ class RecordSet:
 
     def _resolve_where(self):
         if self.where:
-            where_sql, literals = self.where.to_sql()
-            return f"WHERE {where_sql}", literals
+            where_sql, literals, joins = self.where.to_sql()
+            # JOIN address ON address.id = customer.addr
+            join_expression = "\n".join(
+                "JOIN {foreign} ON {foreign}.id = {source}.{column}".format(
+                    foreign=joins[0].field.owner._table_name,
+                    source=joins[0].source._table_name,
+                    column=joins[0].column,
+                ) for join in joins
+            )
+            return f"WHERE {where_sql}", join_expression, literals
         else:
-            return "", []
+            return "", "", []
 
     def __iter__(self):
-        where_expression, literals = self._resolve_where()
+        where_expression, join_expression, literals = self._resolve_where()
 
         limit_expression = f"LIMIT {int(self.limit)}" if self.limit else ""
         if isinstance(self.order_by, tuple):
@@ -138,13 +146,15 @@ class RecordSet:
 
         sql = f"""
         SELECT
-            id
+            {self.model_class._table_name}.id
         FROM
             {self.model_class._table_name}
+        {join_expression}
         {where_expression}
         {order_by_expression}
         {limit_expression}
         """
+        print(sql, literals)
         with conn.cursor() as cur:
             cur.execute(sql, literals)
             for row in cur.fetchall():
@@ -164,11 +174,12 @@ class RecordSet:
         )
 
     def delete(self):
-        where_expression, literals = self._resolve_where()
+        where_expression, join_expression, literals = self._resolve_where()
         sql = f"""
         DELETE
         FROM
             {self.model_class._table_name}
+        {join_expression}
         {where_expression}
         """
         with conn.cursor() as cur:
@@ -177,12 +188,12 @@ class RecordSet:
 
     def update(self, **kwargs):
         # convert via self.model_class._fields -> to_sql
-        where_expression, literals = self._resolve_where()
+        where_expression, join_expression, literals = self._resolve_where()
 
         assert "id" not in kwargs
 
         assignments = [
-            f"{key}=%s"
+            f"{self.model_class._table_name}.{key}=%s"
             for key in kwargs
         ]
 
@@ -190,6 +201,7 @@ class RecordSet:
         UPDATE
             {self.model_class._table_name}
         SET {",".join(assignments)}
+        {join_expression}
         {where_expression}
         """
 
@@ -206,14 +218,16 @@ class RecordSet:
             conn.commit()
 
     def __len__(self):
-        where_expression, literals = self._resolve_where()
+        where_expression, join_expression, literals = self._resolve_where()
         sql = f"""
         SELECT
             COUNT(*)
         FROM
             {self.model_class._table_name}
+        {join_expression}
         {where_expression}
         """
+        print("in len:", sql, literals)
 
         with conn.cursor() as cur:
             cur.execute(sql, literals)
@@ -243,7 +257,7 @@ class Field:
 
     def to_sql(self, value=missing):
         if value is missing:  # when evaluated as part of a WHERE clause
-            return self.name
+            return f"{self.owner._table_name}.{self.name}"
         if value is None:
             return None  # NULL
         if self.type is str:
@@ -289,6 +303,7 @@ class Field:
         self.name = name
         self.desc = f"{name} DESC"
         self.asc = f"{name} ASC"
+        self.owner = owner
 
     def __eq__(self, other):
         return Expression("=", [self, other])
@@ -305,10 +320,33 @@ class Field:
     def __rand__(self, other):
         raise RuntimeError("You have to parenthesize your boolean expressions")
 
+    def __ror__(self, other):
+        raise RuntimeError("You have to parenthesize your boolean expressions")
+
+    def __getattr__(self, attr):
+        if not issubclass(self.type, Model):
+            raise AttributeError("As {self.type.__name__} is not a Model, we can't access the attribute {attr}")
+        return Joiner(self.owner, self.name, getattr(self.type, attr))
+
+class Joiner:
+    def __init__(self, source, column, field):
+        self.source = source
+        self.column = column
+        self.field = field
+
+    def __repr__(self):
+        return f"<Join {self.source} on {self.column} to {self.field}>"
+
+    def __eq__(self, other):
+        return Expression("=", [self.field, other], join=self)
+
+    # TODO remaining magic methods
+
 class Expression:
-    def __init__(self, operator, operands):
+    def __init__(self, operator, operands, join=None):
         self.operator = operator
         self.operands = operands
+        self.join = join
 
     def __repr__(self):
         a, b = self.operands
@@ -323,20 +361,24 @@ class Expression:
     def to_sql(self):
         literals = []
         operands = []
+        joins = []
+        if self.join:
+            joins.append(self.join)
         for operand in self.operands:
             if hasattr(operand, "to_sql"):
                 if isinstance(operand, Expression):
-                    sql_operand, inner_literals = operand.to_sql()
+                    sql_operand, inner_literals, inner_joins = operand.to_sql()
                     operands.append(sql_operand)
                     literals.extend(inner_literals)
+                    joins.append(inner_joins)
                 else:  # Field
                     operands.append(operand.to_sql())
             else:  # literal value
                 literals.append(operand)
                 operands.append("%s")
         if len(self.operands) == 1:
-            return f"{self.operator} {operands[0]}", literals
+            return f"{self.operator} {operands[0]}", literals, joins
         elif len(self.operands) == 2:
-            return f"{operands[0]} {self.operator} {operands[1]}", literals
+            return f"{operands[0]} {self.operator} {operands[1]}", literals, joins
         else:
             raise RuntimeError("Fuckup in Expression: can't have more than 2 operands")

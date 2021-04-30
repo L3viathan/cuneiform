@@ -21,12 +21,16 @@ class Address(ozee.Model):
 class Customer(ozee.Model):
     name = ozee.Field(str)
     type = ozee.Field(CompanyType, default=None)
-    address = ozee.Field(Address, default=None)
+    addr = ozee.Field(Address, default=None)
 
 if __name__ == "__main__":
-    addr = Address(street="Zeppelinstraße", house_number=15, post_code="76135", town="Karlsruhe")
-    cust = Customer(name="solute", type=CompanyType.GmbH, address=addr)
-    cust.save()
+    # addr = Address(street="Zeppelinstraße", house_number=15, post_code="76135", town="Karlsruhe")
+    # cust = Customer(name="solute", type=CompanyType.GmbH, address=addr)
+    # cust.save()
+
+    expr = Customer.addr.house_number == 15
+    print("hn ??:", list(Customer.select()))
+    print("hn 15:", list(Customer.select(where=Customer.addr.house_number == 15)))
 
     # TODO:
     # - search/filter, recordset and its methods (update, delete, ...)
