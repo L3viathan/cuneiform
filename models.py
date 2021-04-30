@@ -24,9 +24,9 @@ class Customer(cf.Model):
     addr = cf.Field(Address, default=None)
 
 if __name__ == "__main__":
-    # addr = Address(street="Zeppelinstraße", house_number=15, post_code="76135", town="Karlsruhe")
-    # cust = Customer(name="solute", type=CompanyType.GmbH, address=addr)
-    # cust.save()
+    addr = Address(street="Zeppelinstraße", house_number=15, post_code="76135", town="Karlsruhe")
+    cust = Customer(name="solute", type=CompanyType.GmbH, address=addr)
+    cust.save()
 
     expr = Customer.addr.house_number == 15
     print("hn ??:", list(Customer.select()))

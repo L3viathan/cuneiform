@@ -38,6 +38,35 @@ class Model:
         return f"<{self.__class__.__name__}{'[D]' if self._dirty else ''} {value_list}>"
 
     @classmethod
+    def create(cls):
+        # 1. create table in DB
+        # 2. make foreign key constraint
+        field_list = {
+            f"{name} {field.sql_type}"
+            for name, field in cls._fields.items()
+        }
+        foreign_keys = []
+        for name, field in cls._fields.items():
+            if issubclass(field.type, Model):
+                field.type.create()
+                foreign_keys.append((name, field.type))
+
+        sql = f"""
+        CREATE TABLE IF NOT EXISTS
+            {cls._table_name}
+        ({', '.join(field_list)})
+        """
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            for fk_name, fk_field in foreign_keys:
+                sql = f"""
+                ALTER TABLE {cls._table_name} DROP CONSTRAINT IF EXISTS fk_{fk_name};
+                ALTER TABLE {cls._table_name} ADD CONSTRAINT fk_{fk_name} FOREIGN KEY ({fk_name}) REFERENCES {fk_field._table_name}(id);
+                """
+                cur.execute(sql)
+            conn.commit()
+
+    @classmethod
     def get(cls, id):
         # return instance from database or cache
         columns = cls._fields
@@ -304,6 +333,18 @@ class Field:
         self.desc = f"{name} DESC"
         self.asc = f"{name} ASC"
         self.owner = owner
+        if name == "id":
+            self.sql_type = "serial primary key"
+        elif self.type is int:
+            self.sql_type = "int"
+        elif self.type is str:
+            self.sql_type = f"varchar({self.options.get('max_length', 255)})"
+        elif issubclass(self.type, Model):
+            self.sql_type = "int"
+        elif issubclass(self.type, Enum):
+            self.sql_type = "int"
+        else:
+            raise RuntimeError(f"Don't know how to adapt type {self.type} to SQL")
 
     def __eq__(self, other):
         return Expression("=", [self, other])
@@ -317,6 +358,12 @@ class Field:
     def __gt__(self, other):
         return Expression(">", [self, other])
 
+    def __le__(self, other):
+        return Expression("<=", [self, other])
+
+    def __ge__(self, other):
+        return Expression(">=", [self, other])
+
     def __rand__(self, other):
         raise RuntimeError("You have to parenthesize your boolean expressions")
 
@@ -325,7 +372,7 @@ class Field:
 
     def __getattr__(self, attr):
         if not issubclass(self.type, Model):
-            raise AttributeError("As {self.type.__name__} is not a Model, we can't access the attribute {attr}")
+            raise AttributeError(f"As {self.type.__name__} is not a Model, we can't access the attribute {attr}")
         return Joiner(self.owner, self.name, getattr(self.type, attr))
 
 class Joiner:
@@ -340,7 +387,20 @@ class Joiner:
     def __eq__(self, other):
         return Expression("=", [self.field, other], join=self)
 
-    # TODO remaining magic methods
+    def __ne__(self, other):
+        return Expression("!=", [self.field, other], join=self)
+
+    def __lt__(self, other):
+        return Expression("<", [self.field, other], join=self)
+
+    def __gt__(self, other):
+        return Expression(">", [self.field, other], join=self)
+
+    def __le__(self, other):
+        return Expression("<=", [self.field, other], join=self)
+
+    def __ge__(self, other):
+        return Expression(">=", [self.field, other], join=self)
 
 class Expression:
     def __init__(self, operator, operands, join=None):
