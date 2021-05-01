@@ -7,19 +7,27 @@ conn = psycopg2.connect("dbname=ozee user=ozee password=ozee")
 
 missing = object()
 
+def plural(name):
+    # super simple pluralization
+    if name.endswith("s"):
+        return f"{name}es"
+    return f"{name}s"
+
 class Model:
     def __init_subclass__(subclass):
+        subclass._table_name = subclass.__name__.lower()  # FIXME CamelCase etc. ABCFoo
         fields = {}
         for field, value in vars(subclass).items():
             if field == "id":
                 raise RuntimeError("Can't explicitly define an 'id' field")
             if isinstance(value, Field):
                 fields[field] = value
+                if issubclass(value._type, Model):
+                    value._type.install_inverse(subclass, field, value)
         fields["id"] = Field(int, required=True)
         fields["id"].__set_name__(subclass, "id")
         setattr(subclass, "id", fields["id"])
         subclass._fields = fields
-        subclass._table_name = subclass.__name__.lower()  # FIXME CamelCase etc. ABCFoo
         subclass.ensure_db_state()
 
     def __init__(self, **kwargs):
@@ -30,9 +38,17 @@ class Model:
             assert k in self._fields, f"{k} is not in fields of {self}, only {self._fields}"
             setattr(self, k, v)
         for k, v in self._fields.items():
-            if v.options.get("required") and k != "id":
-                assert k in kwargs, (k, kwargs, v.options.get("required"))
+            if v._options.get("required") and k != "id" and not v._options.get("virtual"):
+                assert k in kwargs, (k, kwargs, v._options.get("required"))
         self._initializing = False
+
+    @classmethod
+    def install_inverse(cls, other_model, field_name, field):
+        """Set up a fake field on the other side of a foreign key relation."""
+        inverse_name = field._options.get("inverse", plural(other_model._table_name))
+        cls._fields[inverse_name] = Field(other_model, virtual=True, forward_name=field_name)
+        cls._fields[inverse_name].__set_name__(cls, inverse_name)
+        setattr(cls, inverse_name, cls._fields[inverse_name])
 
     def __repr__(self):
         value_list = " ".join(
@@ -77,15 +93,16 @@ class Model:
         return {
             "fields": {
                 name: {
-                    "type": field.sql_type,
-                    "options": field.options,
+                    "type": field._sql_type,
+                    "options": field._options,
                 }
                 for name, field in cls._fields.items()
+                if not field._options.get("virtual")
             },
             "foreign_keys": {
-                name: field.type._table_name
+                name: field._type._table_name
                 for name, field in cls._fields.items()
-                if issubclass(field.type, Model)
+                if issubclass(field._type, Model) and not field._options.get("virtual")
             },
         }
 
@@ -136,7 +153,7 @@ class Model:
     @classmethod
     def get(cls, id):
         # return instance from database or cache
-        columns = cls._fields
+        columns = {column: value for column, value in cls._fields.items() if not value._options.get("virtual")}
         sql = f"""
         SELECT {",".join(columns)}
         FROM {cls._table_name}
@@ -157,6 +174,7 @@ class Model:
                 f"{key}=%s"
                 for key in self._fields
                 if key != "id" and self._values.get(key, missing) is not missing
+                and not self._fields[key]._options("virtual")
             ]
             sql = f"""
             UPDATE {self._table_name}
@@ -169,6 +187,7 @@ class Model:
                         v.to_sql(self._values[k])
                         for (k, v) in self._fields.items()
                         if k != "id" and self._values.get(k, missing) is not missing
+                        and not v._options.get("virtual")
                     ),
                     self.id,
                 ])
@@ -176,10 +195,10 @@ class Model:
         else:
             columns, values = [], []
             for k, v in self._fields.items():
-                if k == "id":
+                if k == "id" or v._options.get("virtual"):
                     continue
                 columns.append(k)
-                default = v.options.get("default", missing)
+                default = v._options.get("default", missing)
                 value = self._values.get(k, missing)
                 if value is not missing:
                     values.append(v.to_sql(value))
@@ -221,11 +240,12 @@ class RecordSet:
         if self.where:
             where_sql, literals, joins = self.where.to_sql()
             join_expression = "\n".join(
-                "JOIN {foreign} ON {foreign}.id = {source}.{column}".format(
+                "JOIN {foreign} ON {foreign}.{foreign_column} = {source}.{source_column}".format(
                     foreign=foreign,
                     source=source,
-                    column=column,
-                ) for source, foreign, column in joins
+                    foreign_column=foreign_column,
+                    source_column=source_column,
+                ) for source, foreign, source_column, foreign_column in joins
             )
             return f"WHERE {where_sql}", join_expression, literals
         else:
@@ -329,38 +349,38 @@ class RecordSet:
 
 class Field:
     def __init__(self, type, **options):
-        self.type = type
-        self.name = None
-        self.options = options
+        self._type = type
+        self._name = None
+        self._options = options
 
     def __repr__(self):
-        return self.name
+        return self._name
 
     def from_sql(self, sql):
         if sql is None:
             return None
-        if self.type in [str, int]:
+        if self._type in [str, int]:
             return sql
-        elif issubclass(self.type, Model):
-            return self.type.get(sql)
-        elif issubclass(self.type, Enum):
-            return self.type(sql)
+        elif issubclass(self._type, Model):
+            return self._type.get(sql)
+        elif issubclass(self._type, Enum):
+            return self._type(sql)
         raise TypeError(f"Don't know how to transform value of type {type(value)} from SQL")
 
     def to_sql(self, value=missing):
         if value is missing:  # when evaluated as part of a WHERE clause
-            return f"{self.owner._table_name}.{self.name}"
+            return f"{self._owner._table_name}.{self._name}"
         if value is None:
             return None  # NULL
-        if self.type is str:
+        if self._type is str:
             return value
-        if issubclass(self.type, Enum):
+        if issubclass(self._type, Enum):
             return value.value
-        if issubclass(self.type, Model):
-            assert isinstance(value, self.type)
+        if issubclass(self._type, Model):
+            assert isinstance(value, self._type)
             value.save()
             return value.id
-        if self.type is int:
+        if self._type is int:
             return value
         raise TypeError(f"Don't know how to transform value of type {type(value)} to SQL")
 
@@ -372,15 +392,15 @@ class Field:
         # get value from DB or cached (?)
         if instance is None:
             return self
-        return instance._values.get(self.name)
+        return instance._values.get(self._name)
 
     def __set__(self, instance, value):
         # set value to DB or write-cache
         # TODO: casting / typechecking
-        if value == instance._values.get(self.name):
+        if value == instance._values.get(self._name):
             return
-        assert isinstance(value, self.type)
-        instance._values[self.name] = value
+        assert isinstance(value, self._type)
+        instance._values[self._name] = value
         if instance.id:
             if instance._initializing:
                 pass
@@ -392,22 +412,22 @@ class Field:
     def __set_name__(self, owner, name):
         # called on class definition time.
         # remember own name, etc.
-        self.name = name
+        self._name = name
         self.desc = f"{name} DESC"
         self.asc = f"{name} ASC"
-        self.owner = owner
+        self._owner = owner
         if name == "id":
-            self.sql_type = "serial primary key"
-        elif self.type is int:
-            self.sql_type = "int"
-        elif self.type is str:
-            self.sql_type = f"varchar({self.options.get('max_length', 255)})"
-        elif issubclass(self.type, Model):
-            self.sql_type = "int"
-        elif issubclass(self.type, Enum):
-            self.sql_type = "int"
+            self._sql_type = "serial primary key"
+        elif self._type is int:
+            self._sql_type = "int"
+        elif self._type is str:
+            self._sql_type = f"varchar({self._options.get('max_length', 255)})"
+        elif issubclass(self._type, Model):
+            self._sql_type = "int"
+        elif issubclass(self._type, Enum):
+            self._sql_type = "int"
         else:
-            raise RuntimeError(f"Don't know how to adapt type {self.type} to SQL")
+            raise RuntimeError(f"Don't know how to adapt type {self._type} to SQL")
 
     def __eq__(self, other):
         return Expression("=", [self, other])
@@ -434,19 +454,20 @@ class Field:
         raise RuntimeError("You have to parenthesize your boolean expressions")
 
     def __getattr__(self, attr):
-        if not issubclass(self.type, Model):
-            raise AttributeError(f"As {self.type.__name__} is not a Model, we can't access the attribute {attr}")
+        if not issubclass(self._type, Model):
+            raise AttributeError(f"As {self._type.__name__} is not a Model, we can't access the attribute {attr}")
         return Expression(
             "join",
             [
                 [
                     (
-                        self.owner._table_name,
-                        self.type._table_name,
-                        self.name,
+                        self._owner._table_name,
+                        self._type._table_name,
+                        self._name if not self._options.get("virtual") else "id",
+                        "id" if not self._options.get("virtual") else self._options["forward_name"],
                     ),
                 ],
-                getattr(self.type, attr),
+                getattr(self._type, attr),
             ],
         )
 
@@ -457,8 +478,8 @@ class Expression:
         self.operands = operands
 
     def __getattr__(self, attr):
-        if not issubclass(self.operands[-1].type, Model) or self.operator != "join":
-            raise AttributeError(f"As {self.type.__name__} is not a Model, we can't access the attribute {attr}")
+        if not issubclass(self.operands[-1]._type, Model) or self.operator != "join":
+            raise AttributeError(f"As {self._type.__name__} is not a Model, we can't access the attribute {attr}")
         field = self.operands[-1]
         return Expression(
             "join",
@@ -466,12 +487,13 @@ class Expression:
                 [
                     *self.operands[0],
                     (
-                        field.owner._table_name,
-                        field.type._table_name,
-                        field.name,
+                        field._owner._table_name,
+                        field._type._table_name,
+                        field._name if not field._options.get("virtual") else "id",
+                        "id" if not field._options.get("virtual") else field._options["forward_name"],
                     ),
                 ],
-                getattr(field.type, attr),
+                getattr(field._type, attr),
             ],
         )
 
