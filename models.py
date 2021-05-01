@@ -44,3 +44,12 @@ if __name__ == "__main__":
             ),
         ),
     )
+    print(
+        "Reverse query:",
+        list(
+            Address.select(
+                where=Address.customers.name == "solute",
+            ),
+        ),
+    )
+
