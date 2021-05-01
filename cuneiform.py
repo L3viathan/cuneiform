@@ -1,4 +1,6 @@
+import json
 from enum import Enum
+from pathlib import Path
 import psycopg2
 
 conn = psycopg2.connect("dbname=ozee user=ozee password=ozee")
@@ -18,6 +20,7 @@ class Model:
         setattr(subclass, "id", fields["id"])
         subclass._fields = fields
         subclass._table_name = subclass.__name__.lower()  # FIXME CamelCase etc. ABCFoo
+        subclass.ensure_db_state()
 
     def __init__(self, **kwargs):
         self._initializing = True
@@ -27,8 +30,8 @@ class Model:
             assert k in self._fields, f"{k} is not in fields of {self}, only {self._fields}"
             setattr(self, k, v)
         for k, v in self._fields.items():
-            if v.required and k != "id":
-                assert k in kwargs, (k, kwargs, v.required)
+            if v.options.get("required") and k != "id":
+                assert k in kwargs, (k, kwargs, v.options.get("required"))
         self._initializing = False
 
     def __repr__(self):
@@ -50,31 +53,85 @@ class Model:
             conn.commit()
 
     @classmethod
-    def create(cls):
-        field_list = {
-            f"{name} {field.sql_type}"
-            for name, field in cls._fields.items()
+    def ensure_db_state(cls):
+        new_state = cls.get_state()
+        state_path = (Path("db_state") / cls._table_name).with_suffix(".json")
+        if state_path.exists():
+            with state_path.open() as f:
+                old_state = json.load(f)
+            if old_state == new_state:
+                return  # nothing to do
+            print(f"DB state: changes detected in {cls._table_name}, auto-migrating...")
+            cls.migrate(old_state, new_state)
+        else:
+            print(f"DB state: table {cls._table_name} missing, creating...")
+            cls.drop()
+            cls.create()
+        state_path.parent.mkdir(exist_ok=True)
+        with state_path.open("w") as f:
+            json.dump(new_state, f)
+
+
+    @classmethod
+    def get_state(cls):
+        return {
+            "fields": {
+                name: {
+                    "type": field.sql_type,
+                    "options": field.options,
+                }
+                for name, field in cls._fields.items()
+            },
+            "foreign_keys": {
+                name: field.type._table_name
+                for name, field in cls._fields.items()
+                if issubclass(field.type, Model)
+            },
         }
-        foreign_keys = []
-        for name, field in cls._fields.items():
-            if issubclass(field.type, Model):
-                field.type.create()
-                foreign_keys.append((name, field.type))
+
+    @classmethod
+    def create(cls):
+        state = cls.get_state()
 
         sql = f"""
         CREATE TABLE IF NOT EXISTS
             {cls._table_name}
-        ({', '.join(field_list)})
+        ({', '.join(name + " " + values["type"] for name, values in state["fields"].items())})
         """
         with conn.cursor() as cur:
             cur.execute(sql)
-            for fk_name, fk_field in foreign_keys:
+            for fk_name, fk_foreign in state["foreign_keys"].items():
                 sql = f"""
                 ALTER TABLE {cls._table_name} DROP CONSTRAINT IF EXISTS fk_{fk_name};
-                ALTER TABLE {cls._table_name} ADD CONSTRAINT fk_{fk_name} FOREIGN KEY ({fk_name}) REFERENCES {fk_field._table_name}(id);
+                ALTER TABLE {cls._table_name} ADD CONSTRAINT fk_{fk_name} FOREIGN KEY ({fk_name}) REFERENCES {fk_foreign}(id);
                 """
                 cur.execute(sql)
             conn.commit()
+        print(f"DB state: created table {cls._table_name}")
+
+    @classmethod
+    def migrate(cls, old_state, new_state):
+        instructions = []
+        # TODO: detect renamed fields, etc.
+        table = cls._table_name
+        for field in {*old_state["fields"], *new_state["fields"]}:
+            if field not in new_state["fields"]:
+                print(f" -> dropping old field {field}")
+                instructions.append(f"ALTER TABLE {table} DROP COLUMN {field};")
+            if field not in old_state["fields"]:
+                print(f" -> adding new field {field}")
+                instructions.append(f"ALTER TABLE {table} ADD COLUMN {field} {new_state['fields'][field]['type']};")
+                if field in new_state["foreign_keys"]:
+                    print(" -> installing foreign key relation of", field, "=>", new_state["foreign_keys"][field])
+                    instructions.append(f"""
+                        ALTER TABLE {table} DROP CONSTRAINT IF EXISTS fk_{field};
+                        ALTER TABLE {table} ADD CONSTRAINT fk_{field} FOREIGN KEY ({field}) REFERENCES {new_state['foreign_keys'][field]}(id);
+                        """
+                    )
+        with conn.cursor() as cur:
+            cur.execute("\n".join(instructions))
+            conn.commit()
+
 
     @classmethod
     def get(cls, id):
@@ -271,10 +328,9 @@ class RecordSet:
 
 
 class Field:
-    def __init__(self, type, required=False, **options):
+    def __init__(self, type, **options):
         self.type = type
         self.name = None
-        self.required = required
         self.options = options
 
     def __repr__(self):

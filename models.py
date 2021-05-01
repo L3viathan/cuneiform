@@ -23,9 +23,6 @@ class Customer(cf.Model):
     addr = cf.Field(Address, default=None)
 
 if __name__ == "__main__":
-    Customer.drop()  # drops all dependent tables
-    Customer.create()  # creates and links all dependent tables
-
     s = Town(name="Stuttgart")
     ka = Town(name="Karlsruhe")
 
