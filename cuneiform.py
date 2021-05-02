@@ -11,6 +11,8 @@ def plural(name):
     # super simple pluralization
     if name.endswith("s"):
         return f"{name}es"
+    elif name.endswith("y"):
+        return f"{name[:-1]}ies"
     return f"{name}s"
 
 class Model:
@@ -392,6 +394,11 @@ class Field:
         # get value from DB or cached (?)
         if instance is None:
             return self
+        if self._options.get("virtual"):
+            # example: some_addr.customers -> Customer.select(where=Customer.addr=some_addr)
+            return self._type.select(
+                where=getattr(self._type, self._options["forward_name"]) == instance,
+            )
         return instance._values.get(self._name)
 
     def __set__(self, instance, value):

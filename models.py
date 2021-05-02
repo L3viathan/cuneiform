@@ -53,3 +53,4 @@ if __name__ == "__main__":
         ),
     )
 
+    print("All customers of solute addr:", solute_addr.customers)
