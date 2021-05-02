@@ -353,6 +353,16 @@ class RecordSet:
             cur.execute(sql, literals)
             return cur.fetchone()[0]
 
+    def get(self):
+        # Assert length and get a single one
+        result = None
+        for instance in self:
+            if result is None:
+                result = instance
+                continue
+            raise ValueError("Multiple matching rows")
+        return result
+
 
 class Field:
     def __init__(self, type, **options):
