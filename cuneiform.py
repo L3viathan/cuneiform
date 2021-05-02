@@ -3,7 +3,11 @@ from enum import Enum
 from pathlib import Path
 import psycopg2
 
-conn = psycopg2.connect("dbname=ozee user=ozee password=ozee")
+conn = None
+
+def configure(db, user, password):
+    global conn
+    conn = psycopg2.connect(f"dbname={db} user={user} password={password}")
 
 missing = object()
 
@@ -17,6 +21,7 @@ def plural(name):
 
 class Model:
     def __init_subclass__(subclass):
+        assert conn, "Call cuneiform.configure() before defining any models"
         subclass._table_name = subclass.__name__.lower()  # FIXME CamelCase etc. ABCFoo
         fields = {}
         for field, value in vars(subclass).items():

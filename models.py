@@ -1,6 +1,8 @@
 from enum import Enum
 import cuneiform as cf
 
+cf.configure(db="ozee", user="ozee", password="ozee")
+
 
 class CompanyType(Enum):
     GmbH = 1
